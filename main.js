@@ -22,6 +22,13 @@ const HIT_SWIPE_SPEED = 260; // px/sec
 
 const COMBO_WINDOW = 1300; // ms between hits to keep a combo alive
 
+// Approach behavior: a fly far from the face dashes straight at it, fast.
+// Once inside ENTER_HOVER_DIST it switches to the slower chaotic hover.
+const APPROACH_SPEED = 2700; // px/sec, ~10x the hover cruise speed
+const APPROACH_SNAPPINESS = 12; // higher = velocity reaches approach speed faster
+const ENTER_HOVER_DIST = 170;
+const EXIT_HOVER_DIST = 260; // must wander this far back out to re-trigger a dash-in
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -322,6 +329,7 @@ class Fly {
     this.target.y = this.y;
     this.retargetTimer = 0;
     this.state = "alive";
+    this.approaching = true;
   }
 
   hit(dirX, dirY) {
@@ -361,7 +369,31 @@ class Fly {
       return;
     }
 
-    // alive: dart erratically while continually re-aiming near the face
+    // alive: decide whether we're still dashing in toward the face or
+    // close enough to switch to the slower chaotic hover, with a bit of
+    // hysteresis so it doesn't flicker between the two modes.
+    const distToFace = Math.hypot(this.x - faceCenter.x, this.y - faceCenter.y);
+    if (this.approaching && distToFace < ENTER_HOVER_DIST) this.approaching = false;
+    if (!this.approaching && distToFace > EXIT_HOVER_DIST) this.approaching = true;
+
+    if (this.approaching) {
+      const toX = faceCenter.x - this.x;
+      const toY = faceCenter.y - this.y;
+      const toLen = Math.hypot(toX, toY) || 1;
+      const desiredVx = (toX / toLen) * APPROACH_SPEED;
+      const desiredVy = (toY / toLen) * APPROACH_SPEED;
+      const ease = Math.min(1, APPROACH_SNAPPINESS * dt);
+      this.vx += (desiredVx - this.vx) * ease;
+      this.vy += (desiredVy - this.vy) * ease;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      this.angle = Math.atan2(this.vy, this.vx);
+      this.retargetTimer = 0;
+      this.updateAudio(faceCenter, canvasSize.width);
+      return;
+    }
+
+    // close: dart erratically while continually re-aiming near the face
     this.retargetTimer -= dt;
     if (this.retargetTimer <= 0) {
       const angle = Math.random() * Math.PI * 2;
