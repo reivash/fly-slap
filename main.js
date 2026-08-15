@@ -20,6 +20,12 @@ const HIT_TOUCH_RADIUS = 42;
 const HIT_SWIPE_RADIUS = 95;
 const HIT_SWIPE_SPEED = 260; // px/sec
 
+// A fast swipe is exactly when the hand model is most likely to briefly
+// lose tracking (motion blur). Keep a joint's last known position around
+// for a short grace period instead of wiping it the instant a frame comes
+// back empty, so the swept hit-test segment can bridge the gap.
+const HAND_TRACK_TIMEOUT = 0.35; // seconds
+
 const COMBO_WINDOW = 1300; // ms between hits to keep a combo alive
 
 // Approach behavior: a fly far from the face swoops toward it in a curved
@@ -613,7 +619,7 @@ function drawHandOverlay(c, handResult, w, h) {
 
 let flies = [];
 let faceRegion = null; // {x0,y0,x1,y1} in canvas pixel space, mirrored
-const prevHandPoints = new Map(); // hand slot index -> array of {x,y} tracked points
+const prevHandPoints = new Map(); // hand slot index -> { points: [{x,y}], t: seconds }
 
 function updateFaceRegion(faceLandmarks, w, h) {
   if (!faceLandmarks || faceLandmarks.length === 0) return;
@@ -643,7 +649,7 @@ function updateFaceRegion(faceLandmarks, w, h) {
   };
 }
 
-function processHands(handResult, w, h, dt, targets) {
+function processHands(handResult, w, h, nowSeconds, targets) {
   const events = [];
   if (!handResult || !handResult.landmarks) return events;
 
@@ -652,15 +658,20 @@ function processHands(handResult, w, h, dt, targets) {
 
   handResult.landmarks.forEach((lm, i) => {
     const points = handKeyPoints(lm, w, h);
-
     seenSlots.add(i);
-    const prevPoints = prevHandPoints.get(i);
-    prevHandPoints.set(i, points);
-    if (!prevPoints || dt <= 0) return;
+
+    const prevEntry = prevHandPoints.get(i);
+    prevHandPoints.set(i, { points, t: nowSeconds });
+    if (!prevEntry) return;
+
+    // dt spans however long this joint was last actually seen, which may
+    // be several frames ago if detection blipped from motion blur
+    const dt = nowSeconds - prevEntry.t;
+    if (dt <= 0) return;
 
     for (let pIdx = 0; pIdx < points.length; pIdx++) {
       const cur = points[pIdx];
-      const prev = prevPoints[pIdx];
+      const prev = prevEntry.points[pIdx];
       if (!prev) continue;
 
       const dist = Math.hypot(cur.x - prev.x, cur.y - prev.y);
@@ -683,8 +694,12 @@ function processHands(handResult, w, h, dt, targets) {
     }
   });
 
-  for (const key of [...prevHandPoints.keys()]) {
-    if (!seenSlots.has(key)) prevHandPoints.delete(key);
+  // only purge a slot once it's been missing for longer than the grace
+  // period -- a single dropped frame shouldn't erase tracking history
+  for (const [key, entry] of prevHandPoints) {
+    if (!seenSlots.has(key) && nowSeconds - entry.t > HAND_TRACK_TIMEOUT) {
+      prevHandPoints.delete(key);
+    }
   }
 
   return events;
@@ -721,7 +736,14 @@ async function init() {
 
   const [faceLandmarker, handLandmarker] = await Promise.all([
     createLandmarker(FaceLandmarker, FACE_MODEL_URL, { numFaces: 1 }),
-    createLandmarker(HandLandmarker, HAND_MODEL_URL, { numHands: 2 }),
+    createLandmarker(HandLandmarker, HAND_MODEL_URL, {
+      numHands: 2,
+      // lower than the 0.5 default so a fast, motion-blurred swipe is
+      // still recognized as a hand instead of dropped for a frame
+      minHandDetectionConfidence: 0.3,
+      minHandPresenceConfidence: 0.3,
+      minTrackingConfidence: 0.3,
+    }),
   ]);
 
   setStatus("Requesting camera access…");
@@ -729,7 +751,9 @@ async function init() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 1280, height: 960, facingMode: "user" },
+      // a higher frame rate means less motion blur per frame and smaller
+      // gaps for the hit-test to bridge during a fast swipe
+      video: { width: 1280, height: 960, frameRate: { ideal: 60, min: 30 }, facingMode: "user" },
       audio: false,
     });
   } catch (err) {
@@ -827,7 +851,7 @@ async function init() {
     }
 
     const targets = boss ? flies.concat(boss) : flies;
-    const hitEvents = processHands(handResult, w, h, dt, targets);
+    const hitEvents = processHands(handResult, w, h, now / 1000, targets);
     for (const evt of hitEvents) {
       if (evt.fly.hit(evt.dirX, evt.dirY)) {
         const isBossHit = evt.fly.isBoss;
