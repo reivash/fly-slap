@@ -38,6 +38,20 @@ const ARC_AMPLITUDE_MAX = 1.4; // radians (~80°)
 const ARC_SPEED_MIN = 0.6; // rad/sec
 const ARC_SPEED_MAX = 1.2; // rad/sec
 
+// Boss fly: shows up occasionally, huge and slow, takes 3 hits. Each of the
+// first two hits knocks it into the wall and it charges back in faster and
+// angrier; the third hit kills it for good.
+const BOSS_HP = 3;
+const BOSS_SCALE_BASE = 19;
+const BOSS_SCALE_VARIANCE = 2; // ~19-21x normal size
+const BOSS_SPEED_MULT = 0.4; // baseline fraction of normal fly speed
+const BOSS_ANGER_STEP = 1.6; // speed multiplier applied per non-fatal hit
+const BOSS_ANGER_CAP = 2.6;
+const BOSS_INITIAL_DELAY_MIN = 10; // seconds before the first boss appears
+const BOSS_INITIAL_DELAY_MAX = 18;
+const BOSS_COOLDOWN_MIN = 20; // seconds between a boss dying and the next one
+const BOSS_COOLDOWN_MAX = 40;
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -226,9 +240,9 @@ function drawParticles(c) {
 // Flies
 // ---------------------------------------------------------------------------
 
-function drawFlyShape(c, wingPhase) {
+function drawFlyShape(c, wingPhase, isBoss) {
   const flap = Math.sin(wingPhase) * 0.5 + 0.5;
-  c.fillStyle = "rgba(225,232,255,0.55)";
+  c.fillStyle = isBoss ? "rgba(255,205,190,0.5)" : "rgba(225,232,255,0.55)";
   c.beginPath();
   c.ellipse(-2, -6 - flap * 2, 9, 4, -0.4, 0, Math.PI * 2);
   c.fill();
@@ -236,7 +250,7 @@ function drawFlyShape(c, wingPhase) {
   c.ellipse(-2, 6 + flap * 2, 9, 4, 0.4, 0, Math.PI * 2);
   c.fill();
 
-  c.fillStyle = "#22212b";
+  c.fillStyle = isBoss ? "#3a1414" : "#22212b";
   c.beginPath();
   c.ellipse(0, 0, 8, 5, 0, 0, Math.PI * 2);
   c.fill();
@@ -244,7 +258,7 @@ function drawFlyShape(c, wingPhase) {
   c.arc(7, 0, 4, 0, Math.PI * 2);
   c.fill();
 
-  c.fillStyle = "#cc3333";
+  c.fillStyle = isBoss ? "#ff2222" : "#cc3333";
   c.beginPath();
   c.arc(8, -1.6, 1.6, 0, Math.PI * 2);
   c.arc(8, 1.6, 1.6, 0, Math.PI * 2);
@@ -252,9 +266,17 @@ function drawFlyShape(c, wingPhase) {
 }
 
 class Fly {
-  constructor(canvasSize, audioCtxRef, destination, onBorderHit) {
+  constructor(canvasSize, audioCtxRef, destination, onBorderHit, isBoss = false) {
     this.audioCtx = audioCtxRef;
     this.onBorderHit = onBorderHit;
+    this.isBoss = isBoss;
+    this.hp = isBoss ? BOSS_HP : 1;
+    this.angerMultiplier = 1;
+    this.approachSpeedMult = isBoss ? BOSS_SPEED_MULT : 1;
+    this.hoverSpeedMult = isBoss ? BOSS_SPEED_MULT : 1;
+    this.bossBaseScale = isBoss
+      ? BOSS_SCALE_BASE + Math.random() * BOSS_SCALE_VARIANCE
+      : null;
     this.wingPhase = Math.random() * Math.PI * 2;
     this.angle = 0;
     this.target = { x: 0, y: 0 };
@@ -283,18 +305,18 @@ class Fly {
 
   initAudio(destination) {
     const c = this.audioCtx;
-    this.baseFreq = 170 + Math.random() * 60;
+    this.baseFreq = this.isBoss ? 45 + Math.random() * 20 : 170 + Math.random() * 60;
     this.osc1 = c.createOscillator();
     this.osc2 = c.createOscillator();
     this.osc1.type = "sawtooth";
     this.osc2.type = "sawtooth";
     this.osc1.frequency.value = this.baseFreq;
-    this.osc2.frequency.value = this.baseFreq * 1.5;
+    this.osc2.frequency.value = this.baseFreq * (this.isBoss ? 1.25 : 1.5);
 
     this.filter = c.createBiquadFilter();
-    this.filter.type = "bandpass";
-    this.filter.frequency.value = 260;
-    this.filter.Q.value = 1.1;
+    this.filter.type = this.isBoss ? "lowpass" : "bandpass";
+    this.filter.frequency.value = this.isBoss ? 220 : 260;
+    this.filter.Q.value = this.isBoss ? 0.8 : 1.1;
 
     this.buzzGain = c.createGain();
     this.buzzGain.gain.value = 0;
@@ -317,11 +339,14 @@ class Fly {
     const dist = Math.hypot(this.x - faceCenter.x, this.y - faceCenter.y);
     const proximity = Math.max(0, 1 - dist / 420);
     const now = this.audioCtx.currentTime;
-    const targetGain = 0.02 + proximity * proximity * 0.4;
+    const baseGain = this.isBoss ? 0.07 : 0.02;
+    const proxBoost = this.isBoss ? 0.5 : 0.4;
+    const targetGain = baseGain + proximity * proximity * proxBoost;
     this.buzzGain.gain.setTargetAtTime(targetGain, now, 0.05);
-    const freq = this.baseFreq * (1 + proximity * 0.7);
+    const freqBoost = this.isBoss ? 0.25 : 0.7;
+    const freq = this.baseFreq * (1 + proximity * freqBoost);
     this.osc1.frequency.setTargetAtTime(freq, now, 0.08);
-    this.osc2.frequency.setTargetAtTime(freq * 1.5, now, 0.08);
+    this.osc2.frequency.setTargetAtTime(freq * (this.isBoss ? 1.25 : 1.5), now, 0.08);
     if (this.panner) {
       const pan = Math.max(-1, Math.min(1, (this.x / canvasWidth) * 2 - 1));
       this.panner.pan.setTargetAtTime(pan, now, 0.12);
@@ -331,6 +356,16 @@ class Fly {
   muteAudio() {
     if (!this.audioCtx) return;
     this.buzzGain.gain.setTargetAtTime(0, this.audioCtx.currentTime, 0.03);
+  }
+
+  destroyAudio() {
+    if (!this.audioCtx) return;
+    try {
+      this.osc1.stop();
+      this.osc2.stop();
+    } catch (err) {
+      // already stopped
+    }
   }
 
   spawnAtEdge(canvasSize) {
@@ -351,7 +386,7 @@ class Fly {
     }
     this.vx = (Math.random() - 0.5) * 60;
     this.vy = (Math.random() - 0.5) * 60;
-    this.scale = 0.85 + Math.random() * 0.3;
+    this.scale = this.isBoss ? this.bossBaseScale : 0.85 + Math.random() * 0.3;
     this.target.x = this.x;
     this.target.y = this.y;
     this.retargetTimer = 0;
@@ -362,12 +397,17 @@ class Fly {
 
   hit(dirX, dirY) {
     if (this.state !== "alive") return false;
+    this.hp -= 1;
     this.state = "launched";
     const len = Math.hypot(dirX, dirY) || 1;
-    const launchSpeed = 780 + Math.random() * 220;
+    const baseLaunch = this.isBoss ? 420 : 780;
+    const launchSpeed = baseLaunch + Math.random() * 220;
     this.vx = (dirX / len) * launchSpeed;
-    this.vy = (dirY / len) * launchSpeed - 140;
+    this.vy = (dirY / len) * launchSpeed - (this.isBoss ? 90 : 140);
     this.muteAudio();
+    if (this.isBoss && this.hp > 0) {
+      this.angerMultiplier = Math.min(this.angerMultiplier * BOSS_ANGER_STEP, BOSS_ANGER_CAP);
+    }
     return true;
   }
 
@@ -386,14 +426,26 @@ class Fly {
       this.x += this.vx * dt;
       this.y += this.vy * dt;
       this.angle = Math.atan2(this.vy, this.vx);
-      this.scale = Math.max(0.25, this.scale - dt * 0.5);
+      if (!this.isBoss) this.scale = Math.max(0.25, this.scale - dt * 0.5);
       const { width, height } = canvasSize;
       if (this.x < -8 || this.x > width + 8 || this.y < -8 || this.y > height + 8) {
         const bx = Math.min(Math.max(this.x, 4), width - 4);
         const by = Math.min(Math.max(this.y, 4), height - 4);
-        if (this.onBorderHit) this.onBorderHit(bx, by);
-        this.state = "exploded";
-        this.respawnTimer = 0.45 + Math.random() * 0.35;
+        const isDead = this.isBoss ? this.hp <= 0 : true;
+        if (this.onBorderHit) this.onBorderHit(bx, by, { isBoss: this.isBoss, isDead });
+        if (this.isBoss && !isDead) {
+          // bounces off the wall and immediately charges back in, angrier
+          this.x = bx;
+          this.y = by;
+          this.scale = this.bossBaseScale;
+          this.state = "alive";
+          this.approaching = true;
+        } else if (this.isBoss && isDead) {
+          this.state = "dead";
+        } else {
+          this.state = "exploded";
+          this.respawnTimer = 0.45 + Math.random() * 0.35;
+        }
       }
       return;
     }
@@ -414,8 +466,9 @@ class Fly {
       const taper = Math.min(1, toLen / 480);
       const swing = Math.sin(this.arcPhase) * this.arcAmplitude * taper;
       const curved = Fly.rotate(toX / toLen, toY / toLen, swing);
-      const desiredVx = curved.x * APPROACH_SPEED;
-      const desiredVy = curved.y * APPROACH_SPEED;
+      const speedMult = this.isBoss ? this.approachSpeedMult * this.angerMultiplier : 1;
+      const desiredVx = curved.x * APPROACH_SPEED * speedMult;
+      const desiredVy = curved.y * APPROACH_SPEED * speedMult;
       const ease = Math.min(1, APPROACH_SNAPPINESS * dt);
       this.vx += (desiredVx - this.vx) * ease;
       this.vy += (desiredVy - this.vy) * ease;
@@ -465,7 +518,7 @@ class Fly {
     this.vy *= 0.9;
 
     const speed = Math.hypot(this.vx, this.vy);
-    const maxSpeed = 270;
+    const maxSpeed = this.isBoss ? 270 * this.hoverSpeedMult * this.angerMultiplier : 270;
     if (speed > maxSpeed) {
       this.vx = (this.vx / speed) * maxSpeed;
       this.vy = (this.vy / speed) * maxSpeed;
@@ -480,12 +533,12 @@ class Fly {
   }
 
   draw(c) {
-    if (this.state === "exploded") return;
+    if (this.state === "exploded" || this.state === "dead") return;
     c.save();
     c.translate(this.x, this.y);
     c.rotate(this.angle);
     c.scale(this.scale, this.scale);
-    drawFlyShape(c, this.wingPhase);
+    drawFlyShape(c, this.wingPhase, this.isBoss);
     c.restore();
   }
 }
@@ -543,7 +596,7 @@ function updateFaceRegion(faceLandmarks, w, h) {
   };
 }
 
-function processHands(handResult, w, h, dt) {
+function processHands(handResult, w, h, dt, targets) {
   const events = [];
   if (!handResult || !handResult.landmarks) return events;
 
@@ -569,7 +622,7 @@ function processHands(handResult, w, h, dt) {
       const isSwipe = speed >= HIT_SWIPE_SPEED;
       const radius = isSwipe ? HIT_SWIPE_RADIUS : HIT_TOUCH_RADIUS;
 
-      for (const fly of flies) {
+      for (const fly of targets) {
         if (fly.state !== "alive" || hitFlies.has(fly)) continue;
         const d = pointToSegmentDistance(fly.x, fly.y, prev.x, prev.y, cur.x, cur.y);
         if (d < radius) {
@@ -655,9 +708,23 @@ async function init() {
   playSlap = createSlapSound(audioCtx, masterGain);
   playPop = createPopSound(audioCtx, masterGain);
 
-  const onBorderHit = (x, y) => {
-    spawnExplosion(x, y, 26, "#ff8a5c");
-    playPop();
+  const onBorderHit = (x, y, meta = {}) => {
+    if (meta.isBoss) {
+      if (meta.isDead) {
+        spawnExplosion(x, y, 80, "#ff3b3b");
+        playPop();
+        score += 10;
+        updateScoreUI();
+        bossSpawnTimer =
+          BOSS_COOLDOWN_MIN + Math.random() * (BOSS_COOLDOWN_MAX - BOSS_COOLDOWN_MIN);
+      } else {
+        spawnExplosion(x, y, 46, "#ff8a5c");
+        playPop();
+      }
+    } else {
+      spawnExplosion(x, y, 26, "#ff8a5c");
+      playPop();
+    }
   };
 
   const canvasSize = { width: canvas.width, height: canvas.height };
@@ -665,6 +732,10 @@ async function init() {
     { length: FLY_COUNT },
     () => new Fly(canvasSize, audioCtx, masterGain, onBorderHit)
   );
+
+  let boss = null;
+  let bossSpawnTimer =
+    BOSS_INITIAL_DELAY_MIN + Math.random() * (BOSS_INITIAL_DELAY_MAX - BOSS_INITIAL_DELAY_MIN);
 
   overlay.classList.add("hidden");
 
@@ -702,12 +773,30 @@ async function init() {
       y: (region.y0 + region.y1) / 2,
     };
 
-    const hitEvents = processHands(handResult, w, h, dt);
+    if (!boss) {
+      bossSpawnTimer -= dt;
+      if (bossSpawnTimer <= 0) {
+        boss = new Fly(canvasSize, audioCtx, masterGain, onBorderHit, true);
+      }
+    }
+
+    const targets = boss ? flies.concat(boss) : flies;
+    const hitEvents = processHands(handResult, w, h, dt, targets);
     for (const evt of hitEvents) {
       if (evt.fly.hit(evt.dirX, evt.dirY)) {
-        spawnExplosion(evt.fly.x, evt.fly.y, 14, "#fff3c4");
-        if (soundEnabled) playSlap();
+        const isBossHit = evt.fly.isBoss;
+        spawnExplosion(
+          evt.fly.x,
+          evt.fly.y,
+          isBossHit ? 34 : 14,
+          isBossHit ? "#ffb84d" : "#fff3c4"
+        );
+        if (soundEnabled) playSlap(isBossHit ? 1.4 : 1);
         registerHit(now);
+        if (isBossHit) {
+          score += 4;
+          updateScoreUI();
+        }
       }
     }
     maybeExpireCombo(now);
@@ -715,6 +804,15 @@ async function init() {
     for (const fly of flies) {
       fly.update(dt, region, faceCenter, canvasSize);
       fly.draw(ctx);
+    }
+
+    if (boss) {
+      boss.update(dt, region, faceCenter, canvasSize);
+      boss.draw(ctx);
+      if (boss.state === "dead") {
+        boss.destroyAudio();
+        boss = null;
+      }
     }
 
     updateParticles(dt);
