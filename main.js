@@ -564,6 +564,64 @@ function averagePoint(lm, idxs) {
   return { x: x / idxs.length, y: y / idxs.length };
 }
 
+// The 3 points used for hit-testing per hand: palm center, index fingertip,
+// middle fingertip. Mirrored into canvas pixel space.
+function handKeyPoints(lm, w, h) {
+  const raw = [averagePoint(lm, [0, 5, 9, 13, 17]), lm[8], lm[12]];
+  return raw.map((p) => ({ x: w - p.x * w, y: p.y * h }));
+}
+
+// Standard 21-point MediaPipe hand joint connections, for drawing a
+// skeleton overlay.
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+
+function drawHandOverlay(c, handResult, w, h) {
+  if (!handResult || !handResult.landmarks) return;
+  for (const lm of handResult.landmarks) {
+    const pts = lm.map((p) => ({ x: w - p.x * w, y: p.y * h }));
+
+    c.save();
+    c.strokeStyle = "rgba(124,242,156,0.9)";
+    c.lineWidth = 3;
+    c.lineJoin = "round";
+    c.lineCap = "round";
+    for (const [a, b] of HAND_CONNECTIONS) {
+      c.beginPath();
+      c.moveTo(pts[a].x, pts[a].y);
+      c.lineTo(pts[b].x, pts[b].y);
+      c.stroke();
+    }
+    c.fillStyle = "rgba(255,255,255,0.95)";
+    for (const p of pts) {
+      c.beginPath();
+      c.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.restore();
+
+    // hitbox: the actual points/radius a slap is tested against
+    c.save();
+    c.setLineDash([5, 4]);
+    c.strokeStyle = "rgba(255,209,102,0.95)";
+    c.fillStyle = "rgba(255,209,102,0.15)";
+    c.lineWidth = 2;
+    for (const p of handKeyPoints(lm, w, h)) {
+      c.beginPath();
+      c.arc(p.x, p.y, HIT_TOUCH_RADIUS, 0, Math.PI * 2);
+      c.fill();
+      c.stroke();
+    }
+    c.restore();
+  }
+}
+
 let flies = [];
 let faceRegion = null; // {x0,y0,x1,y1} in canvas pixel space, mirrored
 const prevHandPoints = new Map(); // hand slot index -> array of {x,y} tracked points
@@ -604,8 +662,7 @@ function processHands(handResult, w, h, dt, targets) {
   const hitFlies = new Set();
 
   handResult.landmarks.forEach((lm, i) => {
-    const rawPoints = [averagePoint(lm, [0, 5, 9, 13, 17]), lm[8], lm[12]];
-    const points = rawPoints.map((p) => ({ x: w - p.x * w, y: p.y * h }));
+    const points = handKeyPoints(lm, w, h);
 
     seenSlots.add(i);
     const prevPoints = prevHandPoints.get(i);
@@ -817,6 +874,8 @@ async function init() {
 
     updateParticles(dt);
     drawParticles(ctx);
+
+    drawHandOverlay(ctx, handResult, w, h);
 
     requestAnimationFrame(frame);
   }
