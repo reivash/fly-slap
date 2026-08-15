@@ -554,21 +554,10 @@ function pointToSegmentDistance(px, py, ax, ay, bx, by) {
   return Math.hypot(px - cx, py - cy);
 }
 
-function averagePoint(lm, idxs) {
-  let x = 0,
-    y = 0;
-  for (const i of idxs) {
-    x += lm[i].x;
-    y += lm[i].y;
-  }
-  return { x: x / idxs.length, y: y / idxs.length };
-}
-
-// The 3 points used for hit-testing per hand: palm center, index fingertip,
-// middle fingertip. Mirrored into canvas pixel space.
+// Every joint of a hand is a hit-test point, mirrored into canvas pixel
+// space, so the whole hand (not just the fingertips) can slap a fly.
 function handKeyPoints(lm, w, h) {
-  const raw = [averagePoint(lm, [0, 5, 9, 13, 17]), lm[8], lm[12]];
-  return raw.map((p) => ({ x: w - p.x * w, y: p.y * h }));
+  return lm.map((p) => ({ x: w - p.x * w, y: p.y * h }));
 }
 
 // Standard 21-point MediaPipe hand joint connections, for drawing a
