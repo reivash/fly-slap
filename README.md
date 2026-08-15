@@ -1,6 +1,6 @@
 # 🪰 Fly Swat Cam
 
-<!-- drop the demo video here -->
+https://github.com/user-attachments/assets/b5c48f7a-4e51-4ad4-a19e-664239a80164
 
 Watch on YouTube: https://youtu.be/7B8ITUgnBp0
 
