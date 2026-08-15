@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fly Swat Cam</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>🪰 Fly Swat Cam</h1>
+      <p id="subtitle">Flies buzz around your face. Slap them away with your hand.</p>
+    </header>
+
+    <div id="stage">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div id="overlay">
+        <button id="startBtn">Start camera</button>
+        <p id="status"></p>
+      </div>
+    </div>
+
+    <div id="hud">
+      <span id="score">Swatted: 0</span>
+      <button id="soundToggle" title="Toggle sound">🔊</button>
+    </div>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
