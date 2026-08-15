@@ -1,5 +1,7 @@
 # 🪰 Fly Swat Cam
 
+[![Fly Slap Cam demo](https://img.youtube.com/vi/7B8ITUgnBp0/hqdefault.jpg)](https://youtu.be/7B8ITUgnBp0)
+
 Flies buzz around your face in your webcam feed. Swipe your hand through one to
 slap it away, with a soft slap sound.
 
@@ -45,5 +47,7 @@ Vercel, etc. — just point them at the repo root.
 
 - Camera video never leaves your device; all tracking runs locally in the
   browser (WebAssembly + optional WebGL/GPU delegate).
-- Tune slap sensitivity in `main.js` via `HIT_SPEED_THRESHOLD` (how fast a
-  swipe must be) and `HIT_RADIUS` (how close it must pass to a fly).
+- Tune slap sensitivity in `main.js` via `HIT_TOUCH_RADIUS` (any overlap
+  counts as a hit), `HIT_SWIPE_RADIUS`/`HIT_SWIPE_SPEED` (bigger reach when
+  the hand is moving fast), and `HAND_TRACK_TIMEOUT` (how long a lost hand
+  is still tracked to bridge fast-swipe motion blur).
