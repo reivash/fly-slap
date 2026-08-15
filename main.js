@@ -12,8 +12,15 @@ const HAND_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 
 const FLY_COUNT = 4;
-const HIT_SPEED_THRESHOLD = 550; // px/sec, palm must be moving at least this fast to count as a slap
-const HIT_RADIUS = 46; // px, how close the swipe path must pass to a fly
+
+// Hit detection: any overlap counts as a slap (touch), a fast-moving hand
+// gets a bigger reach and a stronger launch (swipe). This dual mode makes
+// slapping forgiving without requiring a precise fast swipe every time.
+const HIT_TOUCH_RADIUS = 42;
+const HIT_SWIPE_RADIUS = 95;
+const HIT_SWIPE_SPEED = 260; // px/sec
+
+const COMBO_WINDOW = 1300; // ms between hits to keep a combo alive
 
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
@@ -22,23 +29,72 @@ const overlay = document.getElementById("overlay");
 const startBtn = document.getElementById("startBtn");
 const statusEl = document.getElementById("status");
 const scoreEl = document.getElementById("score");
+const comboEl = document.getElementById("combo");
 const soundToggle = document.getElementById("soundToggle");
 
 let audioCtx = null;
+let masterGain = null;
 let playSlap = () => {};
+let playPop = () => {};
 let soundEnabled = true;
+
 let score = 0;
+let combo = 0;
+let lastHitAt = 0;
 
 soundToggle.addEventListener("click", () => {
   soundEnabled = !soundEnabled;
   soundToggle.textContent = soundEnabled ? "🔊" : "🔇";
+  if (masterGain && audioCtx) {
+    masterGain.gain.setTargetAtTime(
+      soundEnabled ? 1 : 0,
+      audioCtx.currentTime,
+      0.05
+    );
+  }
 });
 
 function setStatus(msg) {
   statusEl.textContent = msg;
 }
 
-function createSlapSound(ctxAudio) {
+function updateScoreUI() {
+  scoreEl.textContent = `Swatted: ${score}`;
+}
+
+function updateComboUI() {
+  if (combo >= 2) {
+    comboEl.textContent = `🔥 Combo x${combo}`;
+    comboEl.classList.remove("hidden");
+    comboEl.classList.remove("pop");
+    // restart the pop animation
+    void comboEl.offsetWidth;
+    comboEl.classList.add("pop");
+  } else {
+    comboEl.classList.add("hidden");
+  }
+}
+
+function registerHit(nowMs) {
+  score += 1;
+  combo = nowMs - lastHitAt < COMBO_WINDOW ? combo + 1 : 1;
+  lastHitAt = nowMs;
+  updateScoreUI();
+  updateComboUI();
+}
+
+function maybeExpireCombo(nowMs) {
+  if (combo > 0 && nowMs - lastHitAt > COMBO_WINDOW) {
+    combo = 0;
+    comboEl.classList.add("hidden");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audio: soft synthesized impact/pop sounds plus a persistent buzz per fly
+// ---------------------------------------------------------------------------
+
+function createSlapSound(ctxAudio, destination) {
   return function play(volume = 1) {
     const now = ctxAudio.currentTime;
     const duration = 0.09;
@@ -63,11 +119,96 @@ function createSlapSound(ctxAudio) {
     gain.gain.exponentialRampToValueAtTime(0.85 * volume, now + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
-    noise.connect(bandpass).connect(gain).connect(ctxAudio.destination);
+    noise.connect(bandpass).connect(gain).connect(destination);
     noise.start(now);
     noise.stop(now + duration + 0.02);
   };
 }
+
+function createPopSound(ctxAudio, destination) {
+  return function play() {
+    const now = ctxAudio.currentTime;
+    const duration = 0.16;
+
+    const osc = ctxAudio.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(90, now + duration);
+
+    const oscGain = ctxAudio.createGain();
+    oscGain.gain.setValueAtTime(0.0001, now);
+    oscGain.gain.exponentialRampToValueAtTime(0.7, now + 0.012);
+    oscGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.connect(oscGain).connect(destination);
+    osc.start(now);
+    osc.stop(now + duration + 0.02);
+
+    const crackleSize = Math.floor(ctxAudio.sampleRate * 0.05);
+    const buffer = ctxAudio.createBuffer(1, crackleSize, ctxAudio.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < crackleSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / crackleSize, 3);
+    }
+    const noise = ctxAudio.createBufferSource();
+    noise.buffer = buffer;
+    const noiseGain = ctxAudio.createGain();
+    noiseGain.gain.setValueAtTime(0.4, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
+    noise.connect(noiseGain).connect(destination);
+    noise.start(now);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Particles
+// ---------------------------------------------------------------------------
+
+let particles = [];
+
+function spawnExplosion(x, y, count, color) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 90 + Math.random() * 260;
+    const maxLife = 0.3 + Math.random() * 0.3;
+    particles.push({
+      x,
+      y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: maxLife,
+      maxLife,
+      size: 2 + Math.random() * 3.5,
+      color,
+    });
+  }
+}
+
+function updateParticles(dt) {
+  for (const p of particles) {
+    p.vx *= 0.92;
+    p.vy = p.vy * 0.92 + 320 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+  }
+  particles = particles.filter((p) => p.life > 0);
+}
+
+function drawParticles(c) {
+  for (const p of particles) {
+    c.globalAlpha = Math.max(p.life / p.maxLife, 0);
+    c.fillStyle = p.color;
+    c.beginPath();
+    c.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    c.fill();
+  }
+  c.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Flies
+// ---------------------------------------------------------------------------
 
 function drawFlyShape(c, wingPhase) {
   const flap = Math.sin(wingPhase) * 0.5 + 0.5;
@@ -95,73 +236,187 @@ function drawFlyShape(c, wingPhase) {
 }
 
 class Fly {
-  constructor(region) {
-    this.respawn(region);
-    this.state = "alive";
-    this.hitTimer = 0;
+  constructor(canvasSize, audioCtxRef, destination, onBorderHit) {
+    this.audioCtx = audioCtxRef;
+    this.onBorderHit = onBorderHit;
     this.wingPhase = Math.random() * Math.PI * 2;
     this.angle = 0;
+    this.target = { x: 0, y: 0 };
+    this.retargetTimer = 0;
+    if (audioCtxRef) this.initAudio(destination);
+    this.spawnAtEdge(canvasSize);
   }
 
-  respawn(region) {
-    this.x = region.x0 + Math.random() * (region.x1 - region.x0);
-    this.y = region.y0 + Math.random() * (region.y1 - region.y0);
-    this.vx = (Math.random() - 0.5) * 40;
-    this.vy = (Math.random() - 0.5) * 40;
+  initAudio(destination) {
+    const c = this.audioCtx;
+    this.baseFreq = 170 + Math.random() * 60;
+    this.osc1 = c.createOscillator();
+    this.osc2 = c.createOscillator();
+    this.osc1.type = "sawtooth";
+    this.osc2.type = "sawtooth";
+    this.osc1.frequency.value = this.baseFreq;
+    this.osc2.frequency.value = this.baseFreq * 1.5;
+
+    this.filter = c.createBiquadFilter();
+    this.filter.type = "bandpass";
+    this.filter.frequency.value = 260;
+    this.filter.Q.value = 1.1;
+
+    this.buzzGain = c.createGain();
+    this.buzzGain.gain.value = 0;
+
+    this.panner = c.createStereoPanner ? c.createStereoPanner() : null;
+
+    this.osc1.connect(this.filter);
+    this.osc2.connect(this.filter);
+    if (this.panner) {
+      this.filter.connect(this.buzzGain).connect(this.panner).connect(destination);
+    } else {
+      this.filter.connect(this.buzzGain).connect(destination);
+    }
+    this.osc1.start();
+    this.osc2.start();
+  }
+
+  updateAudio(faceCenter, canvasWidth) {
+    if (!this.audioCtx) return;
+    const dist = Math.hypot(this.x - faceCenter.x, this.y - faceCenter.y);
+    const proximity = Math.max(0, 1 - dist / 420);
+    const now = this.audioCtx.currentTime;
+    const targetGain = 0.02 + proximity * proximity * 0.4;
+    this.buzzGain.gain.setTargetAtTime(targetGain, now, 0.05);
+    const freq = this.baseFreq * (1 + proximity * 0.7);
+    this.osc1.frequency.setTargetAtTime(freq, now, 0.08);
+    this.osc2.frequency.setTargetAtTime(freq * 1.5, now, 0.08);
+    if (this.panner) {
+      const pan = Math.max(-1, Math.min(1, (this.x / canvasWidth) * 2 - 1));
+      this.panner.pan.setTargetAtTime(pan, now, 0.12);
+    }
+  }
+
+  muteAudio() {
+    if (!this.audioCtx) return;
+    this.buzzGain.gain.setTargetAtTime(0, this.audioCtx.currentTime, 0.03);
+  }
+
+  spawnAtEdge(canvasSize) {
+    const { width: w, height: h } = canvasSize;
+    const edge = Math.floor(Math.random() * 4);
+    if (edge === 0) {
+      this.x = -20;
+      this.y = Math.random() * h;
+    } else if (edge === 1) {
+      this.x = w + 20;
+      this.y = Math.random() * h;
+    } else if (edge === 2) {
+      this.x = Math.random() * w;
+      this.y = -20;
+    } else {
+      this.x = Math.random() * w;
+      this.y = h + 20;
+    }
+    this.vx = (Math.random() - 0.5) * 60;
+    this.vy = (Math.random() - 0.5) * 60;
     this.scale = 0.85 + Math.random() * 0.3;
+    this.target.x = this.x;
+    this.target.y = this.y;
+    this.retargetTimer = 0;
     this.state = "alive";
   }
 
-  hit() {
+  hit(dirX, dirY) {
     if (this.state !== "alive") return false;
-    this.state = "hit";
-    this.hitTimer = 0.35;
+    this.state = "launched";
+    const len = Math.hypot(dirX, dirY) || 1;
+    const launchSpeed = 780 + Math.random() * 220;
+    this.vx = (dirX / len) * launchSpeed;
+    this.vy = (dirY / len) * launchSpeed - 140;
+    this.muteAudio();
     return true;
   }
 
-  update(dt, region) {
-    this.wingPhase += dt * 40;
+  update(dt, region, faceCenter, canvasSize) {
+    this.wingPhase += dt * (55 + Math.hypot(this.vx, this.vy) * 0.25);
 
-    if (this.state === "hit") {
-      this.hitTimer -= dt;
-      this.y -= 70 * dt;
-      this.x += this.vx * 0.6 * dt;
-      this.scale *= 0.95;
-      if (this.hitTimer <= 0) this.respawn(region);
+    if (this.state === "exploded") {
+      this.respawnTimer -= dt;
+      if (this.respawnTimer <= 0) this.spawnAtEdge(canvasSize);
       return;
     }
 
-    this.vx += (Math.random() - 0.5) * 50 * dt;
-    this.vy += (Math.random() - 0.5) * 50 * dt;
-    this.vx *= 0.96;
-    this.vy *= 0.96;
+    if (this.state === "launched") {
+      this.vy += 620 * dt;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      this.angle = Math.atan2(this.vy, this.vx);
+      this.scale = Math.max(0.25, this.scale - dt * 0.5);
+      const { width, height } = canvasSize;
+      if (this.x < -8 || this.x > width + 8 || this.y < -8 || this.y > height + 8) {
+        const bx = Math.min(Math.max(this.x, 4), width - 4);
+        const by = Math.min(Math.max(this.y, 4), height - 4);
+        if (this.onBorderHit) this.onBorderHit(bx, by);
+        this.state = "exploded";
+        this.respawnTimer = 0.45 + Math.random() * 0.35;
+      }
+      return;
+    }
+
+    // alive: dart erratically while continually re-aiming near the face
+    this.retargetTimer -= dt;
+    if (this.retargetTimer <= 0) {
+      const angle = Math.random() * Math.PI * 2;
+      const spread = Math.max(
+        60,
+        Math.min(region.x1 - region.x0, region.y1 - region.y0) * 0.55
+      );
+      const r = Math.random() * spread;
+      this.target.x = faceCenter.x + Math.cos(angle) * r;
+      this.target.y = faceCenter.y + Math.sin(angle) * r;
+      this.retargetTimer = 0.12 + Math.random() * 0.3;
+    }
+
+    const toX = this.target.x - this.x;
+    const toY = this.target.y - this.y;
+    const toLen = Math.hypot(toX, toY) || 1;
+    const seekStrength = 300;
+    this.vx += (toX / toLen) * seekStrength * dt;
+    this.vy += (toY / toLen) * seekStrength * dt;
+
+    // erratic jitter so it darts like an insect instead of gliding
+    this.vx += (Math.random() - 0.5) * 460 * dt;
+    this.vy += (Math.random() - 0.5) * 460 * dt;
+
+    // occasional sharp flinch in a random direction
+    if (Math.random() < dt * 1.3) {
+      const a = Math.random() * Math.PI * 2;
+      this.vx += Math.cos(a) * 220;
+      this.vy += Math.sin(a) * 220;
+    }
+
+    this.vx *= 0.9;
+    this.vy *= 0.9;
 
     const speed = Math.hypot(this.vx, this.vy);
-    const maxSpeed = 75;
+    const maxSpeed = 270;
     if (speed > maxSpeed) {
       this.vx = (this.vx / speed) * maxSpeed;
       this.vy = (this.vy / speed) * maxSpeed;
     }
 
-    if (this.x < region.x0) this.vx += 35 * dt * 10;
-    if (this.x > region.x1) this.vx -= 35 * dt * 10;
-    if (this.y < region.y0) this.vy += 35 * dt * 10;
-    if (this.y > region.y1) this.vy -= 35 * dt * 10;
-
     this.x += this.vx * dt;
     this.y += this.vy * dt;
 
-    if (speed > 4) this.angle = Math.atan2(this.vy, this.vx);
+    if (speed > 8) this.angle = Math.atan2(this.vy, this.vx);
+
+    this.updateAudio(faceCenter, canvasSize.width);
   }
 
   draw(c) {
+    if (this.state === "exploded") return;
     c.save();
     c.translate(this.x, this.y);
     c.rotate(this.angle);
     c.scale(this.scale, this.scale);
-    if (this.state === "hit") {
-      c.globalAlpha = Math.max(this.hitTimer / 0.35, 0);
-    }
     drawFlyShape(c, this.wingPhase);
     c.restore();
   }
@@ -178,9 +433,19 @@ function pointToSegmentDistance(px, py, ax, ay, bx, by) {
   return Math.hypot(px - cx, py - cy);
 }
 
+function averagePoint(lm, idxs) {
+  let x = 0,
+    y = 0;
+  for (const i of idxs) {
+    x += lm[i].x;
+    y += lm[i].y;
+  }
+  return { x: x / idxs.length, y: y / idxs.length };
+}
+
 let flies = [];
 let faceRegion = null; // {x0,y0,x1,y1} in canvas pixel space, mirrored
-const prevPalms = new Map(); // hand slot index -> {x,y,t}
+const prevHandPoints = new Map(); // hand slot index -> array of {x,y} tracked points
 
 function updateFaceRegion(faceLandmarks, w, h) {
   if (!faceLandmarks || faceLandmarks.length === 0) return;
@@ -195,7 +460,6 @@ function updateFaceRegion(faceLandmarks, w, h) {
     if (p.y < minY) minY = p.y;
     if (p.y > maxY) maxY = p.y;
   }
-  // mirror x, expand region so flies have room to buzz around the head
   const marginX = (maxX - minX) * 0.9;
   const marginY = (maxY - minY) * 0.9;
   const nx0 = Math.max(0, minX - marginX);
@@ -212,48 +476,51 @@ function updateFaceRegion(faceLandmarks, w, h) {
 }
 
 function processHands(handResult, w, h, dt) {
-  const hits = [];
-  if (!handResult || !handResult.landmarks) return hits;
+  const events = [];
+  if (!handResult || !handResult.landmarks) return events;
 
   const seenSlots = new Set();
+  const hitFlies = new Set();
 
   handResult.landmarks.forEach((lm, i) => {
-    const idxs = [0, 5, 9, 13, 17];
-    let sx = 0,
-      sy = 0;
-    for (const idx of idxs) {
-      sx += lm[idx].x;
-      sy += lm[idx].y;
-    }
-    sx /= idxs.length;
-    sy /= idxs.length;
-
-    const x = w - sx * w;
-    const y = sy * h;
+    const rawPoints = [averagePoint(lm, [0, 5, 9, 13, 17]), lm[8], lm[12]];
+    const points = rawPoints.map((p) => ({ x: w - p.x * w, y: p.y * h }));
 
     seenSlots.add(i);
-    const prev = prevPalms.get(i);
-    prevPalms.set(i, { x, y });
+    const prevPoints = prevHandPoints.get(i);
+    prevHandPoints.set(i, points);
+    if (!prevPoints || dt <= 0) return;
 
-    if (!prev || dt <= 0) return;
-    const dist = Math.hypot(x - prev.x, y - prev.y);
-    const speed = dist / dt;
-    if (speed < HIT_SPEED_THRESHOLD) return;
+    for (let pIdx = 0; pIdx < points.length; pIdx++) {
+      const cur = points[pIdx];
+      const prev = prevPoints[pIdx];
+      if (!prev) continue;
 
-    for (const fly of flies) {
-      if (fly.state !== "alive") continue;
-      const d = pointToSegmentDistance(fly.x, fly.y, prev.x, prev.y, x, y);
-      if (d < HIT_RADIUS) {
-        hits.push(fly);
+      const dist = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+      const speed = dist / dt;
+      const isSwipe = speed >= HIT_SWIPE_SPEED;
+      const radius = isSwipe ? HIT_SWIPE_RADIUS : HIT_TOUCH_RADIUS;
+
+      for (const fly of flies) {
+        if (fly.state !== "alive" || hitFlies.has(fly)) continue;
+        const d = pointToSegmentDistance(fly.x, fly.y, prev.x, prev.y, cur.x, cur.y);
+        if (d < radius) {
+          hitFlies.add(fly);
+          const midX = (prev.x + cur.x) / 2;
+          const midY = (prev.y + cur.y) / 2;
+          const dirX = isSwipe ? cur.x - prev.x : fly.x - midX || 1;
+          const dirY = isSwipe ? cur.y - prev.y : fly.y - midY;
+          events.push({ fly, dirX, dirY });
+        }
       }
     }
   });
 
-  for (const key of [...prevPalms.keys()]) {
-    if (!seenSlots.has(key)) prevPalms.delete(key);
+  for (const key of [...prevHandPoints.keys()]) {
+    if (!seenSlots.has(key)) prevHandPoints.delete(key);
   }
 
-  return hits;
+  return events;
 }
 
 async function init() {
@@ -313,10 +580,23 @@ async function init() {
   canvas.height = video.videoHeight || 960;
 
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  playSlap = createSlapSound(audioCtx);
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = soundEnabled ? 1 : 0;
+  masterGain.connect(audioCtx.destination);
 
-  const region0 = { x0: 0, y0: 0, x1: canvas.width, y1: canvas.height };
-  flies = Array.from({ length: FLY_COUNT }, () => new Fly(region0));
+  playSlap = createSlapSound(audioCtx, masterGain);
+  playPop = createPopSound(audioCtx, masterGain);
+
+  const onBorderHit = (x, y) => {
+    spawnExplosion(x, y, 26, "#ff8a5c");
+    playPop();
+  };
+
+  const canvasSize = { width: canvas.width, height: canvas.height };
+  flies = Array.from(
+    { length: FLY_COUNT },
+    () => new Fly(canvasSize, audioCtx, masterGain, onBorderHit)
+  );
 
   overlay.classList.add("hidden");
 
@@ -329,6 +609,7 @@ async function init() {
 
     const w = canvas.width;
     const h = canvas.height;
+    const canvasSize = { width: w, height: h };
 
     ctx.save();
     ctx.scale(-1, 1);
@@ -348,23 +629,28 @@ async function init() {
       y0: h * 0.2,
       y1: h * 0.6,
     };
+    const faceCenter = {
+      x: (region.x0 + region.x1) / 2,
+      y: (region.y0 + region.y1) / 2,
+    };
 
-    const hits = processHands(handResult, w, h, dt);
-    for (const fly of hits) {
-      if (fly.hit()) {
-        score += 1;
-        scoreEl.textContent = `Swatted: ${score}`;
-        if (soundEnabled && audioCtx) {
-          if (audioCtx.state === "suspended") audioCtx.resume();
-          playSlap();
-        }
+    const hitEvents = processHands(handResult, w, h, dt);
+    for (const evt of hitEvents) {
+      if (evt.fly.hit(evt.dirX, evt.dirY)) {
+        spawnExplosion(evt.fly.x, evt.fly.y, 14, "#fff3c4");
+        if (soundEnabled) playSlap();
+        registerHit(now);
       }
     }
+    maybeExpireCombo(now);
 
     for (const fly of flies) {
-      fly.update(dt, region);
+      fly.update(dt, region, faceCenter, canvasSize);
       fly.draw(ctx);
     }
+
+    updateParticles(dt);
+    drawParticles(ctx);
 
     requestAnimationFrame(frame);
   }

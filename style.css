@@ -122,6 +122,37 @@ header h1 {
   font-weight: 600;
 }
 
+#combo {
+  background: #3a2a12;
+  color: #ffb84d;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+#combo.hidden {
+  display: none;
+}
+
+#combo.pop {
+  animation: comboPop 0.28s ease-out;
+}
+
+@keyframes comboPop {
+  0% {
+    transform: scale(1.5);
+    opacity: 0.6;
+  }
+  60% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 #soundToggle {
   background: var(--panel);
   border: none;
