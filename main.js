@@ -22,12 +22,21 @@ const HIT_SWIPE_SPEED = 260; // px/sec
 
 const COMBO_WINDOW = 1300; // ms between hits to keep a combo alive
 
-// Approach behavior: a fly far from the face dashes straight at it, fast.
-// Once inside ENTER_HOVER_DIST it switches to the slower chaotic hover.
-const APPROACH_SPEED = 2700; // px/sec, ~10x the hover cruise speed
+// Approach behavior: a fly far from the face swoops toward it in a curved
+// arc rather than a straight line. Once inside ENTER_HOVER_DIST it switches
+// to the slower chaotic hover.
+const APPROACH_SPEED = 900; // px/sec
 const APPROACH_SNAPPINESS = 12; // higher = velocity reaches approach speed faster
 const ENTER_HOVER_DIST = 170;
 const EXIT_HOVER_DIST = 260; // must wander this far back out to re-trigger a dash-in
+
+// Arcing: the seek direction (both approach and hover) is rotated by a
+// slowly oscillating angle so flight paths bend into broad curves instead
+// of beelining or jittering in straight segments.
+const ARC_AMPLITUDE_MIN = 0.9; // radians (~52°)
+const ARC_AMPLITUDE_MAX = 1.4; // radians (~80°)
+const ARC_SPEED_MIN = 0.6; // rad/sec
+const ARC_SPEED_MAX = 1.2; // rad/sec
 
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
@@ -250,8 +259,26 @@ class Fly {
     this.angle = 0;
     this.target = { x: 0, y: 0 };
     this.retargetTimer = 0;
+    this.arcPhase = Math.random() * Math.PI * 2;
+    this.randomizeArc();
     if (audioCtxRef) this.initAudio(destination);
     this.spawnAtEdge(canvasSize);
+  }
+
+  randomizeArc() {
+    this.arcAmplitude =
+      ARC_AMPLITUDE_MIN + Math.random() * (ARC_AMPLITUDE_MAX - ARC_AMPLITUDE_MIN);
+    this.arcSpeed =
+      (ARC_SPEED_MIN + Math.random() * (ARC_SPEED_MAX - ARC_SPEED_MIN)) *
+      (Math.random() < 0.5 ? -1 : 1);
+  }
+
+  // Rotates a unit direction vector by `angle` radians, used to bend
+  // straight seek/approach directions into broad curved arcs.
+  static rotate(x, y, angle) {
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    return { x: x * cosA - y * sinA, y: x * sinA + y * cosA };
   }
 
   initAudio(destination) {
@@ -330,6 +357,7 @@ class Fly {
     this.retargetTimer = 0;
     this.state = "alive";
     this.approaching = true;
+    this.randomizeArc();
   }
 
   hit(dirX, dirY) {
@@ -345,6 +373,7 @@ class Fly {
 
   update(dt, region, faceCenter, canvasSize) {
     this.wingPhase += dt * (55 + Math.hypot(this.vx, this.vy) * 0.25);
+    this.arcPhase += dt * this.arcSpeed;
 
     if (this.state === "exploded") {
       this.respawnTimer -= dt;
@@ -380,8 +409,13 @@ class Fly {
       const toX = faceCenter.x - this.x;
       const toY = faceCenter.y - this.y;
       const toLen = Math.hypot(toX, toY) || 1;
-      const desiredVx = (toX / toLen) * APPROACH_SPEED;
-      const desiredVy = (toY / toLen) * APPROACH_SPEED;
+      // bend the straight-line approach into a broad curve, tapering the
+      // bend out as it nears the target so it still lands on the face
+      const taper = Math.min(1, toLen / 480);
+      const swing = Math.sin(this.arcPhase) * this.arcAmplitude * taper;
+      const curved = Fly.rotate(toX / toLen, toY / toLen, swing);
+      const desiredVx = curved.x * APPROACH_SPEED;
+      const desiredVy = curved.y * APPROACH_SPEED;
       const ease = Math.min(1, APPROACH_SNAPPINESS * dt);
       this.vx += (desiredVx - this.vx) * ease;
       this.vy += (desiredVy - this.vy) * ease;
@@ -410,9 +444,11 @@ class Fly {
     const toX = this.target.x - this.x;
     const toY = this.target.y - this.y;
     const toLen = Math.hypot(toX, toY) || 1;
+    const swing = Math.sin(this.arcPhase) * this.arcAmplitude * 0.6;
+    const curved = Fly.rotate(toX / toLen, toY / toLen, swing);
     const seekStrength = 300;
-    this.vx += (toX / toLen) * seekStrength * dt;
-    this.vy += (toY / toLen) * seekStrength * dt;
+    this.vx += curved.x * seekStrength * dt;
+    this.vy += curved.y * seekStrength * dt;
 
     // erratic jitter so it darts like an insect instead of gliding
     this.vx += (Math.random() - 0.5) * 460 * dt;
