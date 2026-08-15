@@ -1,8 +1,8 @@
 # 🪰 Fly Swat Cam
 
-https://github.com/user-attachments/assets/b5c48f7a-4e51-4ad4-a19e-664239a80164
+https://github.com/user-attachments/assets/e8718211-38e3-4c0e-b426-78dc61081f00
 
-Watch on YouTube: https://youtu.be/7B8ITUgnBp0
+Watch on YouTube: [https://youtu.be/7B8ITUgnBp0](https://youtu.be/JP527rd3e1Q)
 
 Flies buzz around your face in your webcam feed. Swipe your hand through one to
 slap it away, with a soft slap sound.
